@@ -26,6 +26,7 @@ import com.google.atap.tangoservice.TangoXyzIjData;
 import org.w3c.dom.Text;
 
 import java.io.IOException;
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,11 +37,39 @@ import driver.UsbSerialProber;
 
 public class SHITWORKIN extends ActionBarActivity {
 
+    private TextView txtAdf;
+    private TextView txtXView;
+    private TextView txtYView;
+    private TextView txtZView;
 
+
+    private static final int SECS_TO_MILLISECS = 1000;
     private Tango mTango;
     private TangoConfig mConfig;
+    private TextView mUuidTextView;
+    private TextView mRelocalizationTextView;
 
-    private TextView txtAdf;
+    private Button mSaveAdfButton;
+    private Button mFirstPersonButton;
+    private Button mThirdPersonButton;
+    private Button mTopDownButton;
+
+    private double mPreviousPoseTimeStamp;
+    private double mTimeToNextUpdate = UPDATE_INTERVAL_MS;
+
+    private boolean mIsRelocalized;
+    private boolean mIsLearningMode;
+    private boolean mIsConstantSpaceRelocalize;
+
+    private int qX;
+    private int qY;
+    private int qZ;
+
+
+    private static final double UPDATE_INTERVAL_MS = 100.0;
+    private static final DecimalFormat FORMAT_THREE_DECIMAL = new DecimalFormat("00.000");
+
+    private final Object mSharedLock = new Object();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,6 +82,9 @@ public class SHITWORKIN extends ActionBarActivity {
         final Button btnD = (Button) findViewById(R.id.btnRight);
         final Button btnS = (Button) findViewById(R.id.btnBack);
         txtAdf = (TextView) findViewById(R.id.txtADFName);
+        txtXView = (TextView) findViewById(R.id.txtXView);
+        txtYView = (TextView) findViewById(R.id.txtYView);
+        txtZView = (TextView) findViewById(R.id.txtZView);
 
         mTango = new Tango(this);
         mConfig = new TangoConfig();
@@ -254,7 +286,7 @@ public class SHITWORKIN extends ActionBarActivity {
             return;
         }
 
-// Open a connection to the first available driver.
+        // Open a connection to the first available driver.
         UsbSerialDriver driver = availableDrivers.get(0);
         UsbDeviceConnection connection = manager.openDevice(driver.getDevice());
         if (connection == null) {
@@ -271,8 +303,8 @@ public class SHITWORKIN extends ActionBarActivity {
             byte buffer[] = new byte[16];
             buffer = "s".getBytes();
             port.write(buffer, 360);
-//            int numBytesRead = port.read(buffer, 1000);
-//            Log.d(TAG, "Read " + numBytesRead + " bytes.");
+            //int numBytesRead = port.read(buffer, 1000);
+            //Log.d(TAG, "Read " + numBytesRead + " bytes.");
             port.close();
         } catch (IOException e) {
             // Deal with error.
@@ -330,6 +362,16 @@ public class SHITWORKIN extends ActionBarActivity {
             Toast.makeText(getApplicationContext(), "Tango Invalid", Toast.LENGTH_SHORT)
                     .show();
         }
+
+        qX = TangoPoseData.INDEX_ROTATION_X;
+        qY = TangoPoseData.INDEX_ROTATION_Y;
+        qZ = TangoPoseData.INDEX_ROTATION_Z;
+
+        //Toast.makeText(getApplicationContext(), "X: " + Integer.toString(qX), Toast.LENGTH_SHORT);
+
+        txtXView.setText(Boolean.toString(mIsRelocalized));
+        txtYView.setText(Integer.toString(qX));
+//        txtZView.setText(qZ);
     }
 
     private TangoConfig setTangoConfig(Tango tango, boolean isLoadAdf) {
@@ -385,6 +427,60 @@ public class SHITWORKIN extends ActionBarActivity {
 
             @Override
             public void onPoseAvailable(TangoPoseData pose) {
+
+                boolean updateRenderer = false;
+                // Make sure to have atomic access to Tango Data so that
+                // UI loop doesn't interfere while Pose call back is updating
+                // the data.
+                synchronized (mSharedLock) {
+                    // Check for Device wrt ADF pose, Device wrt Start of Service pose,
+                    // Start of Service wrt ADF pose (This pose determines if the device
+                    // is relocalized or not).
+                    if (pose.baseFrame == TangoPoseData.COORDINATE_FRAME_AREA_DESCRIPTION
+                            && pose.targetFrame == TangoPoseData.COORDINATE_FRAME_DEVICE) {
+
+                        if (mIsRelocalized) {
+                            updateRenderer = true;
+                        }
+                    } else if (pose.baseFrame == TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE
+                            && pose.targetFrame == TangoPoseData.COORDINATE_FRAME_DEVICE) {
+                        if (!mIsRelocalized) {
+                            updateRenderer = true;
+                        }
+
+                    } else if (pose.baseFrame == TangoPoseData.COORDINATE_FRAME_AREA_DESCRIPTION
+                            && pose.targetFrame == TangoPoseData
+                            .COORDINATE_FRAME_START_OF_SERVICE) {
+                        if (pose.statusCode == TangoPoseData.POSE_VALID) {
+                            mIsRelocalized = true;
+                            // Set the color to green
+                        } else {
+                            mIsRelocalized = false;
+                            // Set the color blue
+                        }
+                    }
+                }
+
+                final double deltaTime = (pose.timestamp - mPreviousPoseTimeStamp) *
+                        SECS_TO_MILLISECS;
+                mPreviousPoseTimeStamp = pose.timestamp;
+                mTimeToNextUpdate -= deltaTime;
+
+                if (mTimeToNextUpdate < 0.0) {
+                    mTimeToNextUpdate = UPDATE_INTERVAL_MS;
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            synchronized (mSharedLock) {
+//                                mSaveAdfButton.setEnabled(mIsRelocalized);
+//                                mRelocalizationTextView.setText(mIsRelocalized ?
+//                                        getString(R.string.localized) :
+//                                        getString(R.string.not_localized));
+                            }
+                        }
+                    });
+                }
             }
 
             @Override
